@@ -25,6 +25,8 @@ dependencies:
 - text == 1.2.*
 - random == 1.2.*
 - optparse-applicative == 0.16.*
+- array == 0.5.*
+- containers == 0.6.*
 
 library:
   source-dirs: src

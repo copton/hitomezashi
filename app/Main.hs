@@ -4,6 +4,7 @@ import Lib
 import System.Environment (getArgs)
 import Options.Applicative
 import Data.Semigroup ((<>))
+import System.IO
 
 data Options = Options
   { optGridSizeX :: Int
@@ -40,11 +41,12 @@ run options = do
               (optGridSizeY options)
               (optTileSize options)
               ((optTileSize options) `div` 2)
-
+  -- hPutStr stderr (show cfg)
   let stichPattern = genStichPattern cfg (optSeed options)
 
   let walls = stichPatternWalls stichPattern
-  print $ draw cfg walls
+  let plates = stichPatternPlating cfg walls
+  hPutStr stdout $ show $ svg cfg $ drawWalls cfg walls <> drawPlates cfg plates
 
 main :: IO ()
 main = run =<< execParser opts
