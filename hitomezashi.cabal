@@ -25,7 +25,10 @@ source-repository head
 
 library
   exposed-modules:
-      Lib
+      Plates
+      Render
+      StichPatterns
+      Walls
   other-modules:
       Paths_hitomezashi
   hs-source-dirs:

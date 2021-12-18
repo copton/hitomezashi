@@ -1,6 +1,10 @@
 module Main where
 
-import Lib
+import Render
+import Plates
+import Walls
+import StichPatterns
+
 import System.Environment (getArgs)
 import Options.Applicative
 import Data.Semigroup ((<>))
@@ -40,13 +44,13 @@ run options = do
               (optGridSizeX options)
               (optGridSizeY options)
               (optTileSize options)
-              ((optTileSize options) `div` 2)
+              (optTileSize options `div` 2)
   -- hPutStr stderr (show cfg)
   let stichPattern = genStichPattern cfg (optSeed options)
 
   let walls = stichPatternWalls stichPattern
   let plates = stichPatternPlating cfg walls
-  hPutStr stdout $ show $ svg cfg $ drawWalls cfg walls <> drawPlates cfg plates
+  putStr $ show $ svg cfg $ drawWalls cfg walls <> drawPlates cfg plates
 
 main :: IO ()
 main = run =<< execParser opts
