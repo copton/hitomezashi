@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings, RankNTypes #-}
+{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 module Plates  where
 
 import StichPatterns
@@ -6,17 +7,20 @@ import Walls
 
 import Data.List (partition, sortBy, elemIndex)
 import qualified Data.Text as T
-import Control.Monad.ST
+import Control.Monad.ST (runST, ST)
 import Data.Maybe (fromJust)
-import Data.Array.ST
+import Data.Array.ST (STArray, readArray, writeArray, freeze, newArray)
 import qualified Data.Set as S
 import Data.Array (Array, assocs)
 import Data.Bits ( Bits(shiftR, (.|.)) )
 import Data.Word ( Word32 )
 import Data.Function (on)
-import Numeric ( showHex )
+import qualified Data.IntMap as IM
+import Data.Monoid (First(First, getFirst))
+import Control.Monad (forM)
 
 import Debug.Trace (trace)
+import Options.Applicative.Help (groupOrNestLine)
 
 data Plate = Plate
   { plateTile  :: (Int, Int)
@@ -24,53 +28,63 @@ data Plate = Plate
   }
 
 data Direction = N | E | S | W
+  deriving Show
 
 stichPatternPlating :: Config -> [Wall] -> [Plate]
 stichPatternPlating cfg walls =
-    foldr mkPlate [] (assocs plating)
+    -- trace ("groups: " ++ show groups) $
+    -- trace ("neighbors: " ++ show neighbors) $
+    -- trace ("group colors: " ++ show groupColors) $
+    map mkPlate (assocs groups)
   where
-    (plating, groups) = runST (colorize cfg walls)
+    (groups, neighbors) = runST (identifyGroups cfg walls)
+    groupColors = colorize colors neighbors
+    mkPlate (tile, group) = case IM.lookup group groupColors of
+      Nothing -> error "inconsitent group colors map"
+      Just c -> Plate tile c
 
-    groupsBySize = reverse $ map fst $ sortBy (compare `on` snd) groups
-
-    mkPlate (tile, group) plates = case groupColor group groupsBySize of
-      Nothing -> plates
-      Just c ->  Plate tile c : plates
-
-colorize
-  :: Config -> [Wall]
-  -> (forall s. ST s
-        ( Array (Int, Int) Int
-        , [(Int, Int)]
-        ))
-colorize cfg walls = do
-  plates <- noPlates
-  groups <- identifyGroups cfg walls plates
-  plates' <- freeze plates
-  return (plates', groups)
-
-  where
-    noPlates :: ST s (STArray s (Int, Int) Int)
-    noPlates = newArray ((0, 0), (gridSizeX cfg - 1, gridSizeY cfg - 1)) 0
+colors :: [T.Text]
+colors = [ "#ff0000" -- red
+         , "#ffa500" -- orange
+         , "#ffff00" -- yellow
+         , "#008000" -- green
+         , "#0000ff" -- blue
+         , "#4b0082" -- indigo
+         , "#ee82ee" -- violet
+         ]
 
 identifyGroups
-  :: Config -> [Wall] -> STArray s (Int, Int) Int -> ST s [(Int, Int)]
-identifyGroups cfg walls plates = go 1 (0, 0)
+  :: Config -> [Wall]
+  -> (forall s. ST s
+        ( Array (Int, Int) Int -- mapping each tile to a group ID > 0
+        , IM.IntMap (S.Set Int) -- if b in map[a] then there is an edge from a to b
+        ))
+identifyGroups cfg walls = do
+  plates <- noPlates cfg
+  graph <- identifyGroups' cfg walls plates
+  plates' <- freeze plates
+  return (plates', graph)
+
+noPlates :: forall s. Config -> ST s (STArray s (Int, Int) Int)
+noPlates cfg = newArray ((0, 0), (gridSizeX cfg - 1, gridSizeY cfg - 1)) 0
+
+identifyGroups'
+  :: Config -> [Wall] -> STArray s (Int, Int) Int
+  -> ST s (IM.IntMap (S.Set Int))
+identifyGroups' cfg walls plates = go 1 (0, 0)
   where
-    lookup = hasWallLookup walls
+    lookup = hasObstacleLookup walls
 
     go group (x, y)
-      | y >= gridSizeY cfg = return []
+      | y >= gridSizeY cfg = return IM.empty
       | otherwise = do
-          val <- readArray plates (x, y)
-          if val == 0
+          label <- readArray plates (x, y)
+          if label == 0 -- no group yet, identify the group
             then do
-              groupSize <- flood cfg lookup plates group (x, y)
-              groups <- go nextGroup nextCoords
-              if groupSize == 0
-                then return groups
-                else return $ (group, groupSize) : groups
-            else
+              myNeighbors <- flood cfg lookup group (x, y) plates
+              allNeighbors <- go nextGroup nextCoords
+              return $ IM.unionWith S.union myNeighbors allNeighbors
+            else -- already labelled
               go group nextCoords
 
       where
@@ -79,13 +93,13 @@ identifyGroups cfg walls plates = go 1 (0, 0)
           | x >= gridSizeX cfg - 1 = (0    , y + 1)
           | otherwise              = (x + 1, y    )
 
-data HasWallLookup = HasWallLookup
+data HasObstacleLookup = HasObstacleLookup
   { horWallsLookup :: S.Set (Int, Int)
   , verWallsLookup :: S.Set (Int, Int)
   }
 
-hasWallLookup :: [Wall] -> HasWallLookup
-hasWallLookup walls = HasWallLookup horWallsLookup verWallsLookup
+hasObstacleLookup :: [Wall] -> HasObstacleLookup
+hasObstacleLookup walls = HasObstacleLookup horWallsLookup verWallsLookup
   where
     horWallsLookup = S.fromList (map wallTile horWalls)
     verWallsLookup = S.fromList (map wallTile verWalls)
@@ -96,61 +110,87 @@ hasWallLookup walls = HasWallLookup horWallsLookup verWallsLookup
       Horizontal -> True
       Vertical   -> False
 
-hasWall :: Config -> HasWallLookup -> (Int, Int) -> Direction -> Bool
-hasWall cfg lookup (x, y) d
-  | x < 0 = True
-  | y < 0 = True
-  | x >= gridSizeX cfg = True
-  | y >= gridSizeY cfg = True
-  | otherwise = case d of
-      E -> hasWall cfg lookup (x + 1, y    ) W
-      S -> hasWall cfg lookup (x    , y + 1) N
-      N -> S.member (x, y) (horWallsLookup lookup)
-      W -> S.member (x, y) (verWallsLookup lookup)
+data Obstacle = NoObstacle | OuterWall | InnerWall
 
-flood :: Config -> HasWallLookup -> STArray s (Int, Int) Int
-      -> Int -> (Int, Int) -> ST s Int
-flood cfg lookup plates group (x, y)
-  | x < 0 = pure 0
-  | y < 0 = pure 0
-  | x >= gridSizeX cfg = pure 0
-  | y >= gridSizeY cfg = pure 0
+hasObstacle :: Config -> HasObstacleLookup -> (Int, Int) -> Direction -> Obstacle
+hasObstacle cfg lookup (x, y) d
+  | x < 0 = OuterWall
+  | y < 0 = OuterWall
+  | x >= gridSizeX cfg = OuterWall
+  | y >= gridSizeY cfg = OuterWall
+  | otherwise = case d of
+      E -> hasObstacle cfg lookup (x + 1, y    ) W
+      S -> hasObstacle cfg lookup (x    , y + 1) N
+      N | y == 0 -> OuterWall
+      W | x == 0 -> OuterWall
+      N -> if S.member (x, y) (horWallsLookup lookup)
+            then InnerWall
+            else NoObstacle
+      W -> if S.member (x, y) (verWallsLookup lookup)
+            then InnerWall
+            else NoObstacle
+
+flood :: Config
+      -> HasObstacleLookup -- lookup cache for hasObstalce function
+      -> Int  -- the group we are flooding the tiles with
+      -> (Int, Int) -- the tile where the flooding starts
+      -> STArray s (Int, Int) Int -- The grid, labelled with 0 (no group) or group IDs > 0, modified in place
+      -> ST s (IM.IntMap (S.Set Int))  -- the set of neighbouring groups
+flood cfg lookup group (x, y) plates
+  | x < 0 = pure IM.empty
+  | y < 0 = pure IM.empty
+  | x >= gridSizeX cfg = pure IM.empty
+  | y >= gridSizeY cfg = pure IM.empty
   | otherwise = do
-      color <- readArray plates (x, y)
-      case color of
-        0 -> do
+      label <- readArray plates (x, y)
+      case label of
+        0 -> do -- no group label yet
           writeArray plates (x, y) group
-          sum <$> sequence
-            [ pure 1
-            , next N (x    , y - 1)
+          IM.unionsWith S.union <$> sequence
+            [ next N (x    , y - 1)
             , next E (x + 1, y    )
             , next S (x    , y + 1)
             , next W (x - 1, y    )
             ]
 
-        g | g == group -> return 0
+        g | g == group -> -- we have already been here
+          return IM.empty
+
         _ -> error "flooded into different group"
 
       where
         next d c =
-          if hasWall cfg lookup (x, y) d
-            then
-              return 0
-            else
-              flood cfg lookup plates group c
+          case hasObstacle cfg lookup (x, y) d of
+            NoObstacle -> flood cfg lookup group c plates
+            OuterWall  -> return IM.empty
+            InnerWall  -> do
+              neighbor <- readArray plates c
+              return $ IM.fromList
+                [ (group, S.singleton neighbor)
+                , (neighbor, S.singleton group)
+                ]
 
-groupColor :: Int -> [Int] -> Maybe T.Text
-groupColor group groupsBySize =
-    trace (show color) $
-      Just color
+colorize :: (Show a, Eq a) => [a] -> IM.IntMap (S.Set Int) -> IM.IntMap a
+colorize colors = IM.foldrWithKey assignGroupColor IM.empty
   where
-    max :: Double
-    max = fromIntegral $ length groupsBySize - 1
-    scale :: Double
-    scale = 255.0 * 255.0 * 255.0 / max
-    idx :: Double
-    idx = fromIntegral $ fromJust $ elemIndex group groupsBySize
-    val :: Word32
-    val = round $ idx * scale
-    color :: T.Text
-    color = "#" <> T.pack (showHex val "")
+    assignGroupColor group groupNeighbors colorAssignments =
+        case findGroupColor group groupNeighbors colorAssignments of
+          Just colorAssignment -> IM.union colorAssignments colorAssignment
+          Nothing -> error "unable to color groups"
+
+    findGroupColor group groupNeighbors colorAssignments =
+      getFirst $ mconcat $
+        map (First . tryColor group groupNeighbors colorAssignments) colors
+
+    tryColor group groupNeighbors colorAssignments color =
+        if conflict color groupNeighbors colorAssignments
+          then Nothing
+          else Just $ IM.singleton group color
+
+    conflict color groupNeighbors colorAssignments =
+      any (conflict' color colorAssignments) groupNeighbors
+
+    conflict' color colorAssignments neighbor =
+      case IM.lookup neighbor colorAssignments of
+        Nothing -> False      -- neighbor has no color assigned yet
+        Just c  -> c == color

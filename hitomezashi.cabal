@@ -65,6 +65,7 @@ test-suite hitomezashi-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      TestWalls
       Paths_hitomezashi
   hs-source-dirs:
       test
@@ -77,5 +78,7 @@ test-suite hitomezashi-test
     , optparse-applicative ==0.16.*
     , random ==1.2.*
     , svg-builder ==0.1.1
+    , tasty ==1.4.*
+    , tasty-hunit ==0.10.*
     , text ==1.2.*
   default-language: Haskell2010

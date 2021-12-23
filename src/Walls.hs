@@ -5,11 +5,13 @@ import StichPatterns
 import Data.Maybe ( catMaybes )
 
 data Orientation = Horizontal | Vertical
+  deriving Show
 
 data Wall = Wall
   { wallTile        :: (Int, Int)
   , wallOrientation :: Orientation
   }
+  deriving Show
 
 stichPatternWalls :: StichPattern -> [Wall]
 stichPatternWalls sp =
