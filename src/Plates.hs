@@ -8,7 +8,7 @@ import Walls
 import Data.List (partition, sortBy, elemIndex)
 import qualified Data.Text as T
 import Control.Monad.ST (runST, ST)
-import Data.Maybe (mapMaybe)
+import Data.Maybe (fromJust)
 import Data.Array.ST (STArray, readArray, writeArray, freeze, newArray)
 import qualified Data.Set as S
 import Data.Array (Array, assocs)
@@ -38,13 +38,15 @@ stichPatternPlating cfg walls =
     map mkPlate (assocs groups)
   where
     (groups, neighbors, groupSizes) = runST (identifyGroups cfg walls)
-    largestGroups = keysOfMaxValues groupSizes
+    groupsBySize = sortKeysByValue groupSizes
     groupColors = colorGraph colors neighbors
     mkPlate (tile, group)
-      | S.member group largestGroups = Plate tile goldenColor
+      | groupIndex < (length topColors) = Plate tile (topColors !! groupIndex)
       | otherwise = case IM.lookup group groupColors of
           Nothing -> error "inconsitent group colors map"
           Just c -> Plate tile c
+      where
+        groupIndex = fromJust $ elemIndex group groupsBySize
 
 colors :: [T.Text]
 colors = [ "#d72631"
@@ -53,8 +55,14 @@ colors = [ "#d72631"
          , "#5c3c92"
          ]
 
-goldenColor :: T.Text
-goldenColor = "#ffd700"
+topColors :: [T.Text]
+topColors = [ "#ffd500"
+            -- , "#ffaa00"
+            , "#ff8000"
+            ]
+
+sortKeysByValue :: IM.IntMap Int -> [Int]
+sortKeysByValue m = map fst $ reverse $ sortBy (compare `on` snd) (IM.assocs m)
 
 keysOfMaxValues :: IM.IntMap Int -> S.Set Int
 keysOfMaxValues im = case IM.assocs im of
