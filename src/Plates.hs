@@ -8,7 +8,7 @@ import Walls
 import Data.List (partition, sortBy, elemIndex)
 import qualified Data.Text as T
 import Control.Monad.ST (runST, ST)
-import Data.Maybe (fromJust)
+import Data.Maybe (mapMaybe)
 import Data.Array.ST (STArray, readArray, writeArray, freeze, newArray)
 import qualified Data.Set as S
 import Data.Array (Array, assocs)
@@ -17,7 +17,7 @@ import Data.Word ( Word32 )
 import Data.Function (on)
 import qualified Data.IntMap as IM
 import Data.Monoid (First(First, getFirst))
-import Control.Monad (forM)
+import Control.Monad (forM, guard)
 
 import Debug.Trace (trace)
 import Options.Applicative.Help (groupOrNestLine)
@@ -35,13 +35,13 @@ stichPatternPlating cfg walls =
     -- trace ("groups: " ++ show groups) $
     -- trace ("neighbors: " ++ show neighbors) $
     -- trace ("group colors: " ++ show groupColors) $
-    map mkPlate (assocs groups)
+    mapMaybe mkPlate (assocs groups)
   where
     (groups, neighbors) = runST (identifyGroups cfg walls)
-    groupColors = colorize colors neighbors
+    groupColors = colorGraph colors neighbors
     mkPlate (tile, group) = case IM.lookup group groupColors of
-      Nothing -> error "inconsitent group colors map"
-      Just c -> Plate tile c
+      Nothing -> Nothing -- error "inconsitent group colors map"
+      Just c -> Just $ Plate tile c
 
 colors :: [T.Text]
 colors = [ "#ff0000" -- red
@@ -170,17 +170,42 @@ flood cfg lookup group (x, y) plates
                 , (neighbor, S.singleton group)
                 ]
 
+colorGraph :: (Show a, Eq a) => [a] -> IM.IntMap (S.Set Int) -> IM.IntMap a
+colorGraph colors neighbors =
+    case go (IM.assocs neighbors) IM.empty of
+      []  -> error "could not color graph"
+      r:_ -> r
+  where
+    go []           r = return r
+    go ((g, ns):rest) r = do
+      let colors' = take (length colors) (drop g (cycle colors))
+      c <- colors'
+      guard $ not $ conflict c ns r
+      let r' = IM.insert g c r
+      go rest r'
+
+    conflict color groupNeighbors colorAssignments =
+      any (conflict' color colorAssignments) groupNeighbors
+
+    conflict' color colorAssignments neighbor =
+      case IM.lookup neighbor colorAssignments of
+        Nothing -> False      -- neighbor has no color assigned yet
+        Just c  -> c == color
+
+
 colorize :: (Show a, Eq a) => [a] -> IM.IntMap (S.Set Int) -> IM.IntMap a
 colorize colors = IM.foldrWithKey assignGroupColor IM.empty
   where
     assignGroupColor group groupNeighbors colorAssignments =
         case findGroupColor group groupNeighbors colorAssignments of
           Just colorAssignment -> IM.union colorAssignments colorAssignment
-          Nothing -> error "unable to color groups"
+          Nothing -> trace "gap" colorAssignments -- error "unable to color groups"
 
     findGroupColor group groupNeighbors colorAssignments =
       getFirst $ mconcat $
-        map (First . tryColor group groupNeighbors colorAssignments) colors
+        map (First . tryColor group groupNeighbors colorAssignments) colors'
+      where
+        colors' = take (length colors) (drop group (cycle colors))
 
     tryColor group groupNeighbors colorAssignments color =
         if conflict color groupNeighbors colorAssignments
